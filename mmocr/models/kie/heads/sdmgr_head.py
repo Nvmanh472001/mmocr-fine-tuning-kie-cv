@@ -10,6 +10,12 @@ from mmocr.models.common.dictionary import Dictionary
 from mmocr.registry import MODELS, TASK_UTILS
 from mmocr.structures import KIEDataSample
 
+from transformers import AutoTokenizer, AutoModel
+
+_TOKENIZER_ = "vinai/bartpho-word"
+_SEQ_MODEL_ = "vinai/bartpho-word"
+
+
 
 @MODELS.register_module()
 class SDMGRHead(BaseModule):
@@ -49,6 +55,7 @@ class SDMGRHead(BaseModule):
         edge_input: int = 5,
         edge_embed: int = 256,
         num_gnn: int = 2,
+        seq2seq_type: str = "bart",
         bidirectional: bool = False,
         relation_norm: float = 10.,
         module_loss: Dict = dict(type='SDMGRModuleLoss'),
@@ -68,12 +75,22 @@ class SDMGRHead(BaseModule):
         self.node_embed = nn.Embedding(self.dictionary.num_classes, node_input,
                                        self.dictionary.padding_idx)
         hidden = node_embed // 2 if bidirectional else node_embed
-        self.rnn = nn.LSTM(
-            input_size=node_input,
-            hidden_size=hidden,
-            num_layers=1,
-            batch_first=True,
-            bidirectional=bidirectional)
+        
+        seq2seq_supported_types = ["bart", "lstm"]
+        assert (seq2seq_type in seq2seq_supported_types), \
+            f"The Sequence Model Type must be in {seq2seq_supported_types} not include {seq2seq_type}!"
+        
+        if seq2seq_type == "bart":
+            self.tokenizer = AutoModel.from_pretrained(_TOKENIZER_)
+            self.seq_model = AutoModel.from_pretrained(_SEQ_MODEL_)
+        else:
+            self.rnn = nn.LSTM(
+                input_size=node_input,
+                hidden_size=hidden,
+                num_layers=1,
+                batch_first=True,
+                bidirectional=bidirectional)
+            
         self.edge_embed = nn.Linear(edge_input, edge_embed)
         self.gnn_layers = nn.ModuleList(
             [GNNLayer(node_embed, edge_embed) for _ in range(num_gnn)])
