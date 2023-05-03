@@ -1,6 +1,6 @@
-from mmocr.models.common.backbones import MobileViTUnet
+from mmengine.runner import Runner
+from mmengine.config import Config
 
-
-backbone_args = dict(name="mobilevit_xs", in_channels=16)
-mobilevit_unet = MobileViTUnet(backbone_args, base_channels=16)
-print(mobilevit_unet.eval())
+cfg = Config.fromfile("./configs/kie/sdmgr/sdmgr_unet16_60e_wildreceipt.py")
+cfg.work_dir = "./work_dir"
+runner = Runner.from_cfg(cfg)

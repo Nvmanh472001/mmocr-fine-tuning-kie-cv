@@ -467,24 +467,31 @@ def build_backbone(
 class MobileViTUnet(BaseModule):
     def __init__(
         self,
-        backbone_args=dict(
-            name="mobilevit_xs",
-            in_channels=16,
-        ),
+        backbone_name="mobilevit_xs",
+        pretrained=True,
         base_channels=16,
         num_stages=5,
         center=True,
         decoder_use_bn=True,
         norm_layer=nn.BatchNorm2d,
         activation=nn.ReLU,
+        **kwargs,
     ):
         super().__init__()
 
-        encoder = build_backbone(**backbone_args)
+        self.base_channels = base_channels
+        encoder = build_backbone(
+            name=backbone_name,
+            pretrained=pretrained,
+            in_channels=self.base_channels,
+            **kwargs,
+        )
         encoder_channels = [info["num_chs"] for info in encoder.feature_info][::-1]
         self.encoder = encoder
 
-        decoder_channels = tuple([base_channels * 2**i for i in range(num_stages)])
+        decoder_channels = tuple(
+            [self.base_channels * 2**i for i in range(num_stages)]
+        )
 
         if not decoder_use_bn:
             norm_layer = None
