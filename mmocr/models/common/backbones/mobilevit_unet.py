@@ -1,4 +1,3 @@
-from typing import List, Union
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -470,6 +469,9 @@ class MobileViTUnet(BaseModule):
         backbone_name="mobilevit_xs",
         pretrained=True,
         base_channels=16,
+        encoder_freeze=True,
+        non_trainable_layers=(0, 1, 2, 3, 4),
+        preprocessing=True,
         num_stages=5,
         center=True,
         decoder_use_bn=True,
@@ -488,6 +490,12 @@ class MobileViTUnet(BaseModule):
         )
         encoder_channels = [info["num_chs"] for info in encoder.feature_info][::-1]
         self.encoder = encoder
+        if encoder_freeze:
+            self._freeze_encoder(non_trainable_layers)
+
+        if preprocessing:
+            self.mean = self.encoder.default_cfg["mean"]
+            self.std = self.encoder.default_cfg["std"]
 
         decoder_channels = tuple(
             [self.base_channels * 2**i for i in range(num_stages)]
@@ -517,6 +525,42 @@ class MobileViTUnet(BaseModule):
             self.eval()
         x = self.forward(x)
         return x
+
+    def _freeze_encoder(self, non_trainable_layer_idxs):
+        non_trainable_layers = [
+            self.encoder.feature_info[layer_idx]["module"].replace(".", "_")
+            for layer_idx in non_trainable_layer_idxs
+        ]
+        for layer in non_trainable_layers:
+            for child in self.encoder[layer].children():
+                for param in child.parameters():
+                    param.requires_grad = False
+        return
+
+    def _preprocess_input(self, x, input_range=[0, 1], inplace=False):
+        if not x.is_floating_point():
+            raise TypeError(f"Input tensor should be a float tensor. Got {x.dtype}.")
+
+        if x.ndim < 3:
+            raise ValueError(
+                f"Expected tensor to be a tensor image of size (..., C, H, W). Got tensor.size() = {x.size()}"
+            )
+
+        if not inplace:
+            x = x.clone()
+
+        dtype = x.dtype
+        mean = torch.as_tensor(self.mean, dtype=dtype, device=x.device)
+        std = torch.as_tensor(self.std, dtype=dtype, device=x.device)
+        if (std == 0).any():
+            raise ValueError(
+                f"std evaluated to zero after conversion to {dtype}, leading to division by zero."
+            )
+        if mean.ndim == 1:
+            mean = mean.view(-1, 1, 1)
+        if std.ndim == 1:
+            std = std.view(-1, 1, 1)
+        return x.sub_(mean).div_(std)
 
 
 class Conv2dBnAct(nn.Module):
