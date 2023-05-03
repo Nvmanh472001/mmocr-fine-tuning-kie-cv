@@ -1,10 +1,9 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.utils.checkpoint as cp
 from timm import create_model
 
-from typing import Optional
+from typing import Optional, List
 
 from mmocr.registry import MODELS
 from mmengine.model import BaseModule
@@ -443,80 +442,71 @@ __available_models__ = [
 ]
 
 
-def build_backbone(
-    name, pretrained=True, in_channels=16, backbone_indices=None, **kwargs
-):
-    assert (
-        name in __available_models__
-    ), f"Unknown backbone {name}! Please choose the backbone avaiable in {__available_models__}"
-
-    backbone = create_model(
-        model_name=name,
-        pretrained=pretrained,
-        features_only=True,
-        in_chans=in_channels,
-        out_indices=backbone_indices,
-        **kwargs,
-    )
-
-    return backbone
-
-
 @MODELS.register_module()
 class MobileViTUnet(BaseModule):
     def __init__(
         self,
-        backbone_name="mobilevit_xs",
-        pretrained=True,
-        base_channels=16,
+        backbone="mobilevit_xs",
         encoder_freeze=True,
-        non_trainable_layers=(0, 1, 2, 3, 4),
+        pretrained=True,
         preprocessing=True,
-        num_stages=5,
-        center=True,
-        decoder_use_bn=True,
+        non_trainable_layers=(0, 1, 2, 3, 4),
+        backbone_kwargs=None,
+        backbone_indices=None,
+        decoder_use_batchnorm=True,
+        decoder_channels=(256, 128, 64, 32, 16),
+        in_channels=3,
+        center=False,
         norm_layer=nn.BatchNorm2d,
         activation=nn.ReLU,
-        **kwargs,
+        base_channels=16,
     ):
         super().__init__()
-
+        backbone_kwargs = backbone_kwargs or {}
         self.base_channels = base_channels
-        encoder = build_backbone(
-            name=backbone_name,
+
+        if backbone not in __available_models__:
+            raise RuntimeError(
+                f"Unknown backbone {backbone}!\n"
+                f"Existing models should be selected "
+                f"from pretrained_backbones_unet import __available_models__"
+            )
+
+        encoder = create_model(
+            backbone,
+            features_only=True,
+            out_indices=backbone_indices,
+            in_chans=in_channels,
             pretrained=pretrained,
-            in_channels=self.base_channels,
-            **kwargs,
+            **backbone_kwargs,
         )
         encoder_channels = [info["num_chs"] for info in encoder.feature_info][::-1]
         self.encoder = encoder
         if encoder_freeze:
             self._freeze_encoder(non_trainable_layers)
-
         if preprocessing:
             self.mean = self.encoder.default_cfg["mean"]
             self.std = self.encoder.default_cfg["std"]
+        else:
+            self.mean = None
+            self.std = None
 
-        decoder_channels = tuple(
-            [self.base_channels * 2**i for i in range(num_stages)]
-        )
-
-        if not decoder_use_bn:
+        if not decoder_use_batchnorm:
             norm_layer = None
-
         self.decoder = UnetDecoder(
-            encode_channels=encoder_channels,
+            encoder_channels=encoder_channels,
             decoder_channels=decoder_channels,
             norm_layer=norm_layer,
-            activation=activation,
             center=center,
+            activation=activation,
         )
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor):
+        if self.mean and self.std:
+            x = self._preprocess_input(x)
         x = self.encoder(x)
         x.reverse()
         x = self.decoder(x)
-
         return x
 
     @torch.no_grad()
@@ -527,6 +517,14 @@ class MobileViTUnet(BaseModule):
         return x
 
     def _freeze_encoder(self, non_trainable_layer_idxs):
+        """
+        Set selected layers non trainable, excluding BatchNormalization layers.
+        Parameters
+        ----------
+        non_trainable_layer_idxs: tuple
+            Specifies which layers are non-trainable for
+            list of the non trainable layer names.
+        """
         non_trainable_layers = [
             self.encoder.feature_info[layer_idx]["module"].replace(".", "_")
             for layer_idx in non_trainable_layer_idxs
@@ -573,17 +571,16 @@ class Conv2dBnAct(nn.Module):
         stride=1,
         activation=nn.ReLU,
         norm_layer=nn.BatchNorm2d,
-    ) -> None:
-        super(Conv2dBnAct, self).__init__()
+    ):
+        super().__init__()
         self.conv = nn.Conv2d(
-            in_channels=in_channels,
-            out_channels=out_channels,
-            kernel_size=kernel_size,
+            in_channels,
+            out_channels,
+            kernel_size,
             stride=stride,
             padding=padding,
             bias=False,
         )
-
         self.bn = norm_layer(out_channels)
         self.act = activation(inplace=True)
 
@@ -591,7 +588,6 @@ class Conv2dBnAct(nn.Module):
         x = self.conv(x)
         x = self.bn(x)
         x = self.act(x)
-
         return x
 
 
@@ -603,11 +599,10 @@ class DecoderBlock(nn.Module):
         scale_factor=2.0,
         activation=nn.ReLU,
         norm_layer=nn.BatchNorm2d,
-    ) -> None:
-        super(DecoderBlock, self).__init__()
+    ):
+        super().__init__()
         conv_args = dict(kernel_size=3, padding=1, activation=activation)
         self.scale_factor = scale_factor
-
         if norm_layer is None:
             self.conv1 = Conv2dBnAct(in_channels, out_channels, **conv_args)
             self.conv2 = Conv2dBnAct(out_channels, out_channels, **conv_args)
@@ -622,29 +617,26 @@ class DecoderBlock(nn.Module):
     def forward(self, x, skip: Optional[torch.Tensor] = None):
         if self.scale_factor != 1.0:
             x = F.interpolate(x, scale_factor=self.scale_factor, mode="nearest")
-
         if skip is not None:
             x = torch.cat([x, skip], dim=1)
-
         x = self.conv1(x)
         x = self.conv2(x)
-
         return x
 
 
 class UnetDecoder(nn.Module):
     def __init__(
         self,
-        encode_channels,
+        encoder_channels,
         decoder_channels=(256, 128, 64, 32, 16),
-        center=True,
         norm_layer=nn.BatchNorm2d,
+        center=True,
         activation=nn.ReLU,
-    ) -> None:
-        super(UnetDecoder, self).__init__()
+    ):
+        super().__init__()
 
         if center:
-            channels = encode_channels[0]
+            channels = encoder_channels[0]
             self.center = DecoderBlock(
                 channels,
                 channels,
@@ -656,16 +648,16 @@ class UnetDecoder(nn.Module):
             self.center = nn.Identity()
 
         in_channels = [
-            in_chans + skip_chans
-            for in_chans, skip_chans in zip(
-                [encode_channels[0]] + list(decoder_channels[:-1]),
-                list(encode_channels[:-1] + [0]),
+            in_chs + skip_chs
+            for in_chs, skip_chs in zip(
+                [encoder_channels[0]] + list(decoder_channels[:-1]),
+                list(encoder_channels[1:]) + [0],
             )
         ]
 
         out_channels = decoder_channels
 
-        if len(in_channels) != out_channels:
+        if len(in_channels) != len(out_channels):
             in_channels.append(in_channels[-1] // 2)
 
         self.blocks = nn.ModuleList()
@@ -682,11 +674,12 @@ class UnetDecoder(nn.Module):
                 m.weight.data.fill_(1)
                 m.bias.data.zero_()
 
-    def forward(self, x):
+    def forward(self, x: List[torch.Tensor]):
         encoder_head = x[0]
         skips = x[1:]
         x = self.center(encoder_head)
         for i, b in enumerate(self.blocks):
             skip = skips[i] if i < len(skips) else None
             x = b(x, skip)
+        x = self.final_conv(x)
         return x

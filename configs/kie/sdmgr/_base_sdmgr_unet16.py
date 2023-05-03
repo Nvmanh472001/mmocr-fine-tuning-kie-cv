@@ -1,7 +1,7 @@
 _base_ = "_base_sdmgr_novisual.py"
 
 model = dict(
-    backbone=dict(type="MobileViTUnet", base_channels=16),
+    backbone=dict(type="MobileViTUnet"),
     roi_extractor=dict(
         type="mmdet.SingleRoIExtractor",
         roi_layer=dict(type="RoIAlign", output_size=7),

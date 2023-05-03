@@ -70,7 +70,7 @@ model = dict(
         with_padding=True,
         with_unknown=True,
         unknown_token=None),
-    backbone=dict(type='MobileViTUnet', base_channels=16),
+    backbone=dict(type='MobileViTUnet'),
     roi_extractor=dict(
         type='mmdet.SingleRoIExtractor',
         roi_layer=dict(type='RoIAlign', output_size=7),
