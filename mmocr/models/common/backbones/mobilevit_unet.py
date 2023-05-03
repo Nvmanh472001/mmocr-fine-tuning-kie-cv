@@ -467,8 +467,11 @@ def build_backbone(
 class MobileViTUnet(BaseModule):
     def __init__(
         self,
-        backbone_args,
-        base_channels=64,
+        backbone_args=dict(
+            name="mobilevit_xs",
+            in_channels=16,
+        ),
+        base_channels=16,
         num_stages=5,
         center=True,
         decoder_use_bn=True,
