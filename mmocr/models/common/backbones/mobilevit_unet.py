@@ -682,7 +682,7 @@ class UnetDecoder(nn.Module):
                 m.weight.data.fill_(1)
                 m.bias.data.zero_()
 
-    def forward(self, x: List[torch.Tensor]):
+    def forward(self, x):
         encoder_head = x[0]
         skips = x[1:]
         x = self.center(encoder_head)
